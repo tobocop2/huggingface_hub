@@ -319,6 +319,7 @@ def http_get(
     tqdm_class: type[base_tqdm] | None = None,
     _nb_retries: int = 5,
     _tqdm_bar: tqdm | None = None,
+    progress_updater: Callable[[int], None] | None = None,
 ) -> None:
     """
     Download a remote file. Do not gobble up errors, and will return errors tailored to the Hugging Face Hub.
@@ -411,9 +412,13 @@ def http_get(
             try:
                 for chunk in response.iter_bytes(chunk_size=constants.DOWNLOAD_CHUNK_SIZE):
                     if chunk:  # filter out keep-alive new chunks
-                        progress.update(len(chunk))
+                        chunk_size = len(chunk)
+                        progress.update(chunk_size)
                         temp_file.write(chunk)
-                        new_resume_size += len(chunk)
+                        new_resume_size += chunk_size
+                        # Call progress_updater if provided (for non-xet downloads)
+                        if progress_updater is not None:
+                            progress_updater(chunk_size)
                         # Some data has been downloaded from the server so we reset the number of retries.
                         _nb_retries = 5
             except (httpx.ConnectError, httpx.TimeoutException) as e:
@@ -434,6 +439,7 @@ def http_get(
                     tqdm_class=tqdm_class,
                     _nb_retries=_nb_retries - 1,
                     _tqdm_bar=_tqdm_bar,
+                    progress_updater=progress_updater,
                 )
 
     if expected_size is not None and expected_size != temp_file.tell():
@@ -1892,6 +1898,7 @@ def _download_to_tmp_and_move(
                 headers=headers,
                 expected_size=expected_size,
                 tqdm_class=tqdm_class,
+                progress_updater=progress_updater[0] if isinstance(progress_updater, list) else progress_updater,
             )
 
     logger.debug(f"Download complete. Moving file to {destination_path}")
