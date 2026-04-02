@@ -9,7 +9,7 @@ import uuid
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Literal, NoReturn, overload
+from typing import Any, BinaryIO, Callable, Literal, NoReturn, overload
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -453,6 +453,7 @@ def xet_get(
     displayed_filename: str | None = None,
     tqdm_class: type[base_tqdm] | None = None,
     _tqdm_bar: tqdm | None = None,
+    progress_updater: list[Callable] | None = None,
 ) -> None:
     """
     Download a file using Xet storage service.
@@ -470,6 +471,15 @@ def xet_get(
         displayed_filename (`str`, *optional*):
             The filename of the file that is being downloaded. Value is used only to display a nice progress bar. If
             not set, the filename is guessed from the URL or the `Content-Disposition` header.
+        progress_updater (`list[Callable]`, *optional*):
+            A list of callback functions to receive download progress updates. Each callback
+            can be either:
+            - A 1-arg function: receives `progress_bytes` (cumulative bytes downloaded)
+            - A 2-arg function: receives `(total_update, item_updates)` for detailed progress.
+              The `total_update` object has `total_transfer_bytes_completion_increment` for
+              network-level granularity (~200KB chunks) and `total_bytes_completion_increment`
+              for disk-write granularity (~8MB chunks).
+            xet-core automatically detects the callback signature and calls it appropriately.
 
     **How it works:**
         The file download system uses Xet storage, which is a content-addressable storage system that breaks files into chunks
@@ -544,24 +554,33 @@ def xet_get(
     with progress_cm as progress:
         _last_size = 0
 
-        def progress_updater(progress_bytes: float):
-            nonlocal _last_size
-            if progress_bytes > 0:
-                progress.update(progress_bytes)
-            elif incomplete_path.exists():
-                # xet may report 0 bytes; fall back to actual file size on disk
-                current_size = incomplete_path.stat().st_size
-                delta = current_size - _last_size
-                if delta > 0:
-                    _last_size = current_size
-                    progress.update(delta)
+        if progress_updater is not None:
+            # User provided custom progress callbacks
+            # xet-core detects callback signature (1-arg vs 2-arg) automatically
+            # and calls appropriately
+            xet_callbacks = progress_updater
+        else:
+            # Use default tqdm-based progress
+            def progress_updater(progress_bytes: float):
+                nonlocal _last_size
+                if progress_bytes > 0:
+                    progress.update(progress_bytes)
+                elif incomplete_path.exists():
+                    # xet may report 0 bytes; fall back to actual file size on disk
+                    current_size = incomplete_path.stat().st_size
+                    delta = current_size - _last_size
+                    if delta > 0:
+                        _last_size = current_size
+                        progress.update(delta)
+
+            xet_callbacks = [progress_updater]
 
         download_files(
             xet_download_info,
             endpoint=connection_info.endpoint,
             token_info=(connection_info.access_token, connection_info.expiration_unix_epoch),
             token_refresher=token_refresher,
-            progress_updater=[progress_updater],
+            progress_updater=xet_callbacks,
             request_headers=xet_headers,
         )
 
@@ -783,6 +802,7 @@ def hf_hub_download(
     headers: dict[str, str] | None = None,
     endpoint: str | None = None,
     tqdm_class: type[base_tqdm] | None = None,
+    progress_updater: Callable[[int], None] | None = None,
     dry_run: Literal[True] = True,
 ) -> DryRunFileInfo: ...
 
@@ -807,6 +827,7 @@ def hf_hub_download(
     headers: dict[str, str] | None = None,
     endpoint: str | None = None,
     tqdm_class: type[base_tqdm] | None = None,
+    progress_updater: Callable[[int], None] | None = None,
     dry_run: bool = False,
 ) -> str | DryRunFileInfo: ...
 
@@ -831,6 +852,7 @@ def hf_hub_download(
     headers: dict[str, str] | None = None,
     endpoint: str | None = None,
     tqdm_class: type[base_tqdm] | None = None,
+    progress_updater: Callable[[int], None] | None = None,
     dry_run: bool = False,
 ) -> str | DryRunFileInfo:
     """Download a given file if it's not already present in the local cache.
@@ -912,6 +934,11 @@ def hf_hub_download(
             argument must inherit from `tqdm.auto.tqdm` or at least mimic its behavior.
             Defaults to the custom HF progress bar that can be disabled by setting
             `HF_HUB_DISABLE_PROGRESS_BARS` environment variable.
+        progress_updater (`Callable`, *optional*):
+            A callback function to receive download progress updates. Receives a single
+            integer argument: the number of bytes downloaded since the last update.
+            When using xet storage, a more detailed callback can be used - see
+            `xet_get` for more information. If provided, takes precedence over tqdm_class.
         dry_run (`bool`, *optional*, defaults to `False`):
             If `True`, perform a dry run without actually downloading the file. Returns a
             [`DryRunFileInfo`] object containing information about what would be downloaded.
@@ -990,6 +1017,7 @@ def hf_hub_download(
             force_download=force_download,
             local_files_only=local_files_only,
             tqdm_class=tqdm_class,
+            progress_updater=progress_updater,
             dry_run=dry_run,
         )
     else:
@@ -1010,6 +1038,7 @@ def hf_hub_download(
             local_files_only=local_files_only,
             force_download=force_download,
             tqdm_class=tqdm_class,
+            progress_updater=progress_updater,
             dry_run=dry_run,
         )
 
@@ -1032,6 +1061,7 @@ def _hf_hub_download_to_cache_dir(
     local_files_only: bool,
     force_download: bool,
     tqdm_class: type[base_tqdm] | None,
+    progress_updater: Callable[[int], None] | None,
     dry_run: bool,
 ) -> str | DryRunFileInfo:
     """Download a given file to a cache folder, if not already present.
@@ -1246,6 +1276,7 @@ def _hf_hub_download_to_local_dir(
     force_download: bool,
     local_files_only: bool,
     tqdm_class: type[base_tqdm] | None,
+    progress_updater: Callable[[int], None] | None,
     dry_run: bool,
 ) -> str | DryRunFileInfo:
     """Download a given file to a local folder, if not already present.
