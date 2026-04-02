@@ -536,7 +536,7 @@ def xet_get(
 
     # Truncate filename if too long to display
     if len(displayed_filename) > 40:
-        displayed_filename = f"{displayed_filename[:40]}(…)"
+        displayed_filename = f"{displayed_filename[:40]}…"
 
     progress_cm = _get_progress_bar_context(
         desc=displayed_filename,
@@ -544,8 +544,8 @@ def xet_get(
         total=expected_size,
         initial=0,
         name="huggingface_hub.xet_get",
-        tqdm_class=tqdm_class,
-        _tqdm_bar=_tqdm_bar,
+        tqdm_class=None if progress_updater is not None else tqdm_class,
+        _tqdm_bar=None if progress_updater is not None else _tqdm_bar,
     )
 
     xet_headers = headers.copy()
@@ -1250,6 +1250,7 @@ def _hf_hub_download_to_cache_dir(
             etag=etag,
             xet_file_data=xet_file_data,
             tqdm_class=tqdm_class,
+            progress_updater=progress_updater,
         )
         if not os.path.exists(pointer_path):
             _create_symlink(blob_path, pointer_path, new_blob=True)
@@ -1462,6 +1463,7 @@ def _hf_hub_download_to_local_dir(
             etag=etag,
             xet_file_data=xet_file_data,
             tqdm_class=tqdm_class,
+            progress_updater=progress_updater,
         )
 
     write_download_metadata(local_dir=local_dir, filename=filename, commit_hash=commit_hash, etag=etag)
@@ -1826,6 +1828,7 @@ def _download_to_tmp_and_move(
     etag: str | None,
     xet_file_data: XetFileData | None,
     tqdm_class: type[base_tqdm] | None = None,
+    progress_updater: list[Callable] | None = None,
 ) -> None:
     """Download content from a URL to a destination path.
 
@@ -1872,6 +1875,7 @@ def _download_to_tmp_and_move(
                 expected_size=expected_size,
                 displayed_filename=filename,
                 tqdm_class=tqdm_class,
+                progress_updater=progress_updater,
             )
         else:
             if xet_file_data is not None and not constants.HF_HUB_DISABLE_XET:
