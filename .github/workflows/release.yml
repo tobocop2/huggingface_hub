@@ -73,7 +73,7 @@ jobs:
       since_tag: ${{ steps.version.outputs.since_tag }}
       bump_type: ${{ steps.version.outputs.bump_type }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: main
           fetch-depth: 0
@@ -246,10 +246,10 @@ jobs:
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: ${{ needs.prepare.outputs.tag }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.10"
       - name: Install build dependencies
@@ -269,10 +269,10 @@ jobs:
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: ${{ needs.prepare.outputs.tag }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.10"
       - name: Install build dependencies
@@ -299,10 +299,8 @@ jobs:
     needs: prepare
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
-    outputs:
-      drafted_prerelease: ${{ steps.check_draft.outputs.skip == 'false' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: ${{ needs.prepare.outputs.tag }}
           fetch-depth: 0
@@ -337,7 +335,7 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         if: ${{ inputs.release_type == 'minor-prerelease' && steps.check_draft.outputs.skip != 'true' }}
         with:
           python-version: "3.12"
@@ -396,14 +394,6 @@ jobs:
 
           gh release create "${ARGS[@]}"
 
-      - name: Upload release notes artifact
-        if: ${{ inputs.release_type == 'minor-prerelease' && steps.check_draft.outputs.skip != 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-notes
-          path: .release-notes/
-          retention-days: 7
-
       # --- Minor release: update existing draft to point to the final tag ---
       - name: Promote draft release to final version
         if: ${{ inputs.release_type == 'minor-release' }}
@@ -415,8 +405,8 @@ jobs:
           MINOR=$(echo "$VERSION" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')
 
           # Find the existing draft release for this minor version
-          EXISTING_TAG=$(gh release list --json tagName,isDraft --limit 100 \
-            | jq -r ".[] | select(.isDraft) | select(.tagName | startswith(\"v${MINOR}.\")) | .tagName" | head -1)
+          EXISTING_TAG=$(gh release list --json tagName --limit 100 \
+            | jq -r ".[] | select(.tagName | startswith(\"v${MINOR}.\")) | .tagName" | head -1)
 
           if [[ -n "$EXISTING_TAG" ]]; then
             echo "Updating existing draft release from $EXISTING_TAG to $TAG"
@@ -436,14 +426,16 @@ jobs:
   # ============================================================
   slack-message:
     needs: [prepare, release-notes]
-    if: ${{ needs.prepare.outputs.is_prerelease == 'true' && needs.release-notes.outputs.drafted_prerelease == 'true' && !inputs.dry_run }}
+    # Use !cancelled() so this job runs even if release-notes failed (we fetch the draft directly from GitHub).
+    # This also allows re-running this job after manually editing the draft release notes.
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.is_prerelease == 'true' && !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.12"
 
@@ -453,11 +445,24 @@ jobs:
       - name: Install OpenCode
         run: curl -fsSL https://opencode.ai/install | bash
 
-      - name: Download release notes artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: release-notes
-          path: .release-notes/
+      - name: Fetch draft release notes from GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          MINOR=$(echo "$VERSION" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')
+
+          # Find the draft release for this minor version
+          RELEASE_TAG=$(gh release list --json tagName,isDraft --limit 100 \
+            | jq -r ".[] | select(.isDraft) | select(.tagName | startswith(\"v${MINOR}.\")) | .tagName" | head -1)
+
+          if [[ -z "$RELEASE_TAG" ]]; then
+            echo "::error::No draft release found for v${MINOR}. Ensure a prerelease draft exists."
+            exit 1
+          fi
+
+          echo "Found draft release: $RELEASE_TAG"
+          gh release view "$RELEASE_TAG" --json body -q '.body' > notes.md
 
       - name: Generate Slack message
         env:
@@ -468,9 +473,12 @@ jobs:
           BASE_VERSION=$(echo "$VERSION" | sed -E 's/\.rc.*//')
           # Convert 1.7.0.rc0 -> 1.7.0rc0 for pip
           RC_PIP_VERSION=$(echo "$VERSION" | sed -E 's/\.rc/rc/')
+          # Create output directory (.release-notes/ is in .gitignore so absent after checkout)
+          mkdir -p .release-notes
           python -m utils.release_notes.generate_slack_message \
             --version "v${BASE_VERSION}" \
-            --rc-version "${RC_PIP_VERSION}"
+            --rc-version "${RC_PIP_VERSION}" \
+            --input notes.md
 
       - name: Print Slack message to summary
         run: |
@@ -509,7 +517,7 @@ jobs:
           exit 1
 
       - name: Checkout target repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: huggingface/${{ matrix.target-repo }}
           path: ${{ matrix.target-repo }}
@@ -579,12 +587,12 @@ jobs:
     steps:
       - name: Create GitHub App token
         id: app_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2
         with:
           app-id: ${{ secrets.APP_ID_HUGGINGFACE_HUB_BOT }}
           private-key: ${{ secrets.APP_SECRET_PEM_HUGGINGFACE_HUB_BOT }}
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: main
           token: ${{ steps.app_token.outputs.token }}
@@ -634,12 +642,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout huggingface_hub
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.12"
 
@@ -653,14 +661,14 @@ jobs:
 
       - name: Create GitHub App token
         id: app_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2
         with:
           app-id: ${{ secrets.APP_ID_HUB_SKILLS_REPO }}
           private-key: ${{ secrets.APP_SECRET_PREM_HUB_SKILLS_REPO }}
           repositories: skills
 
       - name: Checkout skills repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: huggingface/skills
           token: ${{ steps.app_token.outputs.token }}
@@ -677,7 +685,7 @@ jobs:
 
       - name: Create Pull Request
         if: steps.check_changes.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676  # v7
         with:
           token: ${{ steps.app_token.outputs.token }}
           path: skills-repo
