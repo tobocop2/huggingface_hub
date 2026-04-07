@@ -18,7 +18,7 @@ from huggingface_hub.utils import (
     tqdm,
     tqdm_stream_file,
 )
-from huggingface_hub.utils.tqdm import _get_progress_bar_context
+from huggingface_hub.utils.tqdm import _create_progress_bar, _get_progress_bar_context
 
 
 class CapsysBaseTest(unittest.TestCase):
@@ -286,3 +286,48 @@ class TestCreateProgressBarCustomClass:
         )
         with bar as pbar:
             pbar.update(10)
+
+
+class TestCreateProgressBarCrashResilience:
+    """Test that _create_progress_bar handles init failures gracefully.
+
+    Regression tests for tqdm crashing with OSError/ValueError in threaded
+    contexts (e.g. Textual TUI workers, some web servers) due to multiprocessing
+    lock initialization using invalid file descriptors.
+    """
+
+    def test_oserror_falls_back_to_disabled_bar(self):
+        """OSError during tqdm init should return a disabled bar, not crash."""
+
+        class CrashingTqdm(tqdm):
+            def __init__(self, *args, **kwargs):
+                if not kwargs.get("disable"):
+                    raise OSError("[Errno 9] Bad file descriptor")
+                super().__init__(*args, **kwargs)
+
+        bar = _create_progress_bar(cls=CrashingTqdm, log_level=logging.INFO, total=100)
+        assert bar.disable
+
+    def test_valueerror_falls_back_to_disabled_bar(self):
+        """ValueError during tqdm init should return a disabled bar, not crash."""
+
+        class CrashingTqdm(tqdm):
+            def __init__(self, *args, **kwargs):
+                if not kwargs.get("disable"):
+                    raise ValueError("bad value(s) in fds_to_keep")
+                super().__init__(*args, **kwargs)
+
+        bar = _create_progress_bar(cls=CrashingTqdm, log_level=logging.INFO, total=100)
+        assert bar.disable
+
+    def test_custom_class_oserror_falls_back_to_disabled(self):
+        """Custom (non-HF) tqdm class that crashes should also fall back gracefully."""
+
+        class CrashingCustomTqdm(vanilla_tqdm):
+            def __init__(self, *args, **kwargs):
+                if not kwargs.get("disable"):
+                    raise OSError("[Errno 9] Bad file descriptor")
+                super().__init__(*args, **kwargs)
+
+        bar = _create_progress_bar(cls=CrashingCustomTqdm, log_level=logging.INFO, total=100)
+        assert bar.disable

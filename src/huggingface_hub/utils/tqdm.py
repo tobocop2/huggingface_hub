@@ -293,7 +293,16 @@ def _create_progress_bar(*, cls: type[old_tqdm], log_level: int, name: str | Non
     """
     # issubclass() crashes on non-class callables (e.g. functools.partial), guard with isinstance.
     if not (isinstance(cls, type) and issubclass(cls, tqdm)):
-        return cls(**kwargs)  # type: ignore[return-value]
+        try:
+            return cls(**kwargs)  # type: ignore[return-value]
+        except (OSError, ValueError):
+            warnings.warn(
+                "Progress bar could not be initialized in this environment. "
+                "Download will continue without progress reporting. "
+                "Set HF_HUB_DISABLE_PROGRESS_BARS=1 to silence this warning.",
+                stacklevel=2,
+            )
+            return cls(disable=True, **kwargs)  # type: ignore[return-value]
 
     # HF subclass: apply all disable signals + TTY auto-detection.
     if are_progress_bars_disabled(name) or log_level == logging.NOTSET:
@@ -302,7 +311,16 @@ def _create_progress_bar(*, cls: type[old_tqdm], log_level: int, name: str | Non
         disable = False
     else:
         disable = None
-    return cls(disable=disable, name=name, **kwargs)  # type: ignore[return-value]
+    try:
+        return cls(disable=disable, name=name, **kwargs)  # type: ignore[return-value]
+    except (OSError, ValueError):
+        warnings.warn(
+            "Progress bar could not be initialized in this environment. "
+            "Download will continue without progress reporting. "
+            "Set HF_HUB_DISABLE_PROGRESS_BARS=1 to silence this warning.",
+            stacklevel=2,
+        )
+        return cls(disable=True, **kwargs)  # type: ignore[return-value]
 
 
 def _get_progress_bar_context(
